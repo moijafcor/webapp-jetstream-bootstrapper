@@ -1,4 +1,4 @@
-# Laravel Jetstream Automated Setup
+# Webapp Automated Setup Powered by Laravel|Jetstream|Livewire 
 
 This repository contains a Python script designed to fully automate the setup of a new Laravel project with **Laravel Jetstream (Livewire stack, with Teams and Dark Mode support)** and configure its MySQL database. This script streamlines the initial setup, handling common dependencies and configurations, including secure password generation and `.env` file population.
 
