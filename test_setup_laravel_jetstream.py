@@ -17,7 +17,12 @@ from setup_laravel_jetstream_sudo import (
     generate_secure_password,
     run_command,
     setup_mysql_thread_target,
-    deploy_codebase_thread_target
+    deploy_codebase_thread_target,
+    read_env_file,
+    repair_mysql_user,
+    update_env_password,
+    finalize_laravel_installation,
+    repair_installation
 )
 
 
@@ -363,6 +368,324 @@ class TestErrorHandling:
         
         with pytest.raises(RuntimeError, match="An unexpected error occurred"):
             run_command('test_command')
+
+
+class TestRepairFunctionality:
+    """Test suite for installation repair functionality."""
+    
+    def test_read_env_file_success(self):
+        """Test successful .env file reading."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create a mock .env file
+            env_content = """APP_NAME=TestApp
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=test_db
+DB_USERNAME=test_user
+DB_PASSWORD=old_password
+"""
+            env_file = os.path.join(temp_dir, '.env')
+            with open(env_file, 'w') as f:
+                f.write(env_content)
+            
+            db_config, env_config = read_env_file(temp_dir)
+            
+            assert db_config['name'] == 'test_db'
+            assert db_config['user'] == 'test_user'
+            assert db_config['host'] == '127.0.0.1'
+            assert db_config['port'] == '3306'
+            assert env_config['APP_NAME'] == 'TestApp'
+    
+    def test_read_env_file_missing_file(self):
+        """Test .env file reading when file doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with pytest.raises(FileNotFoundError):
+                read_env_file(temp_dir)
+    
+    def test_read_env_file_missing_db_config(self):
+        """Test .env file reading with missing database configuration."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create .env file without database config
+            env_content = "APP_NAME=TestApp\nAPP_DEBUG=true\n"
+            env_file = os.path.join(temp_dir, '.env')
+            with open(env_file, 'w') as f:
+                f.write(env_content)
+            
+            with pytest.raises(ValueError, match="Missing DB_DATABASE or DB_USERNAME"):
+                read_env_file(temp_dir)
+    
+    def test_read_env_file_with_quotes(self):
+        """Test .env file reading with quoted values."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_content = '''APP_NAME="Test App"
+DB_DATABASE='test_db'
+DB_USERNAME=test_user
+'''
+            env_file = os.path.join(temp_dir, '.env')
+            with open(env_file, 'w') as f:
+                f.write(env_content)
+            
+            db_config, env_config = read_env_file(temp_dir)
+            
+            assert db_config['name'] == 'test_db'
+            assert db_config['user'] == 'test_user'
+            assert env_config['APP_NAME'] == 'Test App'
+    
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    def test_repair_mysql_user_success(self, mock_run_command):
+        """Test successful MySQL user repair."""
+        db_config = {
+            'name': 'test_db',
+            'user': 'test_user'
+        }
+        new_password = 'new_secure_pass123'
+        
+        mock_run_command.return_value = True
+        
+        result = repair_mysql_user(db_config, new_password)
+        
+        assert result is True
+        assert mock_run_command.call_count == 5  # 5 MySQL commands
+        
+        # Verify DROP USER command is called
+        calls = mock_run_command.call_args_list
+        drop_call = calls[0][0][0]  # First command
+        assert 'DROP USER IF EXISTS' in drop_call
+        assert 'test_user' in drop_call
+    
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    def test_repair_mysql_user_failure(self, mock_run_command):
+        """Test MySQL user repair failure."""
+        db_config = {
+            'name': 'test_db',
+            'user': 'test_user'
+        }
+        new_password = 'new_secure_pass123'
+        
+        mock_run_command.side_effect = RuntimeError("MySQL command failed")
+        
+        result = repair_mysql_user(db_config, new_password)
+        
+        assert result is False
+    
+    def test_update_env_password_success(self):
+        """Test successful .env password update."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create initial .env file
+            env_content = """APP_NAME=TestApp
+DB_CONNECTION=mysql
+DB_PASSWORD=old_password
+APP_DEBUG=true
+"""
+            env_file = os.path.join(temp_dir, '.env')
+            with open(env_file, 'w') as f:
+                f.write(env_content)
+            
+            new_password = 'new_secure_pass123'
+            result = update_env_password(temp_dir, new_password)
+            
+            assert result is True
+            
+            # Verify password was updated
+            with open(env_file, 'r') as f:
+                updated_content = f.read()
+            
+            assert f'DB_PASSWORD={new_password}' in updated_content
+            assert 'old_password' not in updated_content
+    
+    def test_update_env_password_add_missing(self):
+        """Test adding DB_PASSWORD when it doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create .env file without DB_PASSWORD
+            env_content = """APP_NAME=TestApp
+DB_CONNECTION=mysql
+APP_DEBUG=true
+"""
+            env_file = os.path.join(temp_dir, '.env')
+            with open(env_file, 'w') as f:
+                f.write(env_content)
+            
+            new_password = 'new_secure_pass123'
+            result = update_env_password(temp_dir, new_password)
+            
+            assert result is True
+            
+            # Verify password was added
+            with open(env_file, 'r') as f:
+                updated_content = f.read()
+            
+            assert f'DB_PASSWORD={new_password}' in updated_content
+    
+    def test_update_env_password_file_not_found(self):
+        """Test .env password update when file doesn't exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = update_env_password(temp_dir, 'test_password')
+            assert result is False
+    
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    @patch('os.path.exists')
+    def test_finalize_laravel_installation_success(self, mock_exists, mock_run_command):
+        """Test successful Laravel installation finalization."""
+        # Mock file system checks
+        mock_exists.return_value = True
+        mock_run_command.return_value = True
+        
+        result = finalize_laravel_installation('/test/path')
+        
+        assert result is True
+        assert mock_run_command.call_count >= 6  # At least 6 artisan commands
+        
+        # Verify key commands were called
+        calls = [call[0][0] for call in mock_run_command.call_args_list]
+        
+        migrate_called = any('migrate' in cmd for cmd in calls)
+        key_generate_called = any('key:generate' in cmd for cmd in calls)
+        config_clear_called = any('config:clear' in cmd for cmd in calls)
+        php_version_called = any('php --version' in cmd for cmd in calls)
+        
+        assert migrate_called
+        assert key_generate_called  
+        assert config_clear_called
+        assert php_version_called
+    
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    @patch('os.path.exists')
+    def test_finalize_laravel_installation_failure(self, mock_exists, mock_run_command):
+        """Test Laravel installation finalization failure."""
+        # Mock missing artisan file
+        mock_exists.side_effect = lambda path: 'artisan' not in path
+        
+        with pytest.raises(RuntimeError, match="Laravel artisan file not found"):
+            finalize_laravel_installation('/test/path')
+    
+    @patch('setup_laravel_jetstream_sudo.finalize_laravel_installation')
+    @patch('setup_laravel_jetstream_sudo.update_env_password')
+    @patch('setup_laravel_jetstream_sudo.repair_mysql_user')
+    @patch('setup_laravel_jetstream_sudo.read_env_file')
+    @patch('setup_laravel_jetstream_sudo.generate_secure_password')
+    @patch('os.path.exists')
+    def test_repair_installation_success(self, mock_exists, mock_gen_password, 
+                                       mock_read_env, mock_repair_mysql, 
+                                       mock_update_env, mock_finalize):
+        """Test successful installation repair workflow."""
+        # Mock project directory and artisan file exist
+        mock_exists.side_effect = lambda path: True
+        
+        # Mock database config reading
+        mock_read_env.return_value = (
+            {'name': 'test_db', 'user': 'test_user'},
+            {'APP_NAME': 'TestApp'}
+        )
+        
+        # Mock password generation
+        mock_gen_password.return_value = 'new_secure_pass123'
+        
+        # Mock all repair steps to succeed
+        mock_repair_mysql.return_value = True
+        mock_update_env.return_value = True
+        mock_finalize.return_value = True
+        
+        result = repair_installation('test_project')
+        
+        assert result is True
+        mock_read_env.assert_called_once()
+        mock_gen_password.assert_called_once()
+        mock_repair_mysql.assert_called_once()
+        mock_update_env.assert_called_once()
+        mock_finalize.assert_called_once()
+    
+    @patch('os.path.exists')
+    def test_repair_installation_project_not_found(self, mock_exists):
+        """Test repair when project directory doesn't exist."""
+        mock_exists.return_value = False
+        
+        with pytest.raises(FileNotFoundError, match="Project directory not found"):
+            repair_installation('nonexistent_project')
+    
+    @patch('os.path.exists')
+    def test_repair_installation_not_laravel_project(self, mock_exists):
+        """Test repair when directory is not a Laravel project."""
+        # Project dir exists but artisan file doesn't
+        mock_exists.side_effect = lambda path: 'artisan' not in path
+        
+        with pytest.raises(ValueError, match="Not a Laravel project"):
+            repair_installation('not_laravel_project')
+    
+    @patch('setup_laravel_jetstream_sudo.read_env_file')
+    @patch('os.path.exists')
+    def test_repair_installation_env_read_failure(self, mock_exists, mock_read_env):
+        """Test repair when .env file reading fails."""
+        mock_exists.return_value = True
+        mock_read_env.side_effect = RuntimeError("Failed to read .env")
+        
+        result = repair_installation('test_project')
+        
+        assert result is False
+    
+    @patch('setup_laravel_jetstream_sudo.repair_mysql_user')
+    @patch('setup_laravel_jetstream_sudo.read_env_file')
+    @patch('setup_laravel_jetstream_sudo.generate_secure_password')
+    @patch('os.path.exists')
+    def test_repair_installation_mysql_repair_failure(self, mock_exists, mock_gen_password,
+                                                     mock_read_env, mock_repair_mysql):
+        """Test repair when MySQL user repair fails."""
+        mock_exists.return_value = True
+        mock_read_env.return_value = (
+            {'name': 'test_db', 'user': 'test_user'}, 
+            {}
+        )
+        mock_gen_password.return_value = 'test_pass'
+        mock_repair_mysql.return_value = False
+        
+        result = repair_installation('test_project')
+        
+        assert result is False
+
+
+class TestRepairIntegration:
+    """Integration tests for repair functionality."""
+    
+    @patch('setup_laravel_jetstream_sudo.repair_installation')
+    @patch('sys.exit')
+    def test_main_repair_mode_success(self, mock_exit, mock_repair):
+        """Test main function in repair mode with success."""
+        mock_repair.return_value = True
+        
+        # Mock command line args
+        test_args = ['script.py', 'test_project', '--repair']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            main()
+        
+        mock_repair.assert_called_once_with('test_project')
+        mock_exit.assert_called_once_with(0)
+    
+    @patch('setup_laravel_jetstream_sudo.repair_installation')
+    @patch('sys.exit')
+    def test_main_repair_mode_failure(self, mock_exit, mock_repair):
+        """Test main function in repair mode with failure."""
+        mock_repair.return_value = False
+        
+        # Mock command line args
+        test_args = ['script.py', 'test_project', '--repair']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            main()
+        
+        mock_repair.assert_called_once_with('test_project')
+        mock_exit.assert_called_once_with(1)
+    
+    @patch('sys.exit')
+    def test_main_missing_required_args_for_new_install(self, mock_exit):
+        """Test main function validates required args for new installations."""
+        # Mock command line args without --dbname and --dbuser
+        test_args = ['script.py', 'test_project']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            main()
+        
+        mock_exit.assert_called_once_with(1)
 
 
 if __name__ == '__main__':

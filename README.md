@@ -76,17 +76,32 @@ python setup_laravel_jetstream_sudo.py [project_name] --dbname [database_name] -
 
 ### Arguments
 
-[project_name] (positional, required): The name of your new Laravel project. This will also be the name of the directory created for your project.
+**For New Installations:**
+- `[project_name]` (positional, required): The name of your new Laravel project. This will also be the name of the directory created for your project.
+- `--dbname` (required): The name for the new MySQL database.
+- `--dbuser` (required): The username for the new MySQL database user.
 
---dbname (required): The name for the new MySQL database.
+**For Repair Mode:**
+- `[project_name]` (positional, required): The name of the existing Laravel project directory.
+- `--repair` (flag): Repair a broken installation by reading existing .env, generating new password, and completing setup.
 
---dbuser (required): The username for the new MySQL database user.
+### Example Usage
 
-Example Usage
+**New Installation:**
 
 ```bash
 python setup_laravel_jetstream_sudo.py my-awesome-app --dbname my_app_db --dbuser app_dev_user
 ```
+
+**Repair Broken Installation:**
+
+```bash
+python setup_laravel_jetstream_sudo.py my-awesome-app --repair
+```
+
+## How It Works
+
+### New Installation
 
 The script will:
 
@@ -98,8 +113,30 @@ The script will:
 * Populate the .env file with all necessary configurations, including the generated database password.
 * Run database migrations.
 * Generate the application key and clear caches.
-* Generated Database Password
-* The script will print the generated database password to your console. Please make a note of this password. It will also be automatically written into your new Laravel project's .env file.
+
+### Repair Mode
+
+When using `--repair`, the script will:
+
+* Read the existing `.env` file to extract database configuration
+* Generate a new secure, shell-safe password
+* Drop and recreate the MySQL user with the new password
+* Update the `.env` file with the new password
+* Run Laravel migrations and finalization steps
+* Clear caches and optimize the application
+
+This is useful when:
+- Database password contains shell-unsafe characters causing `SQLSTATE[HY000] [1045]` errors
+- MySQL user permissions are corrupted
+- Laravel installation was interrupted mid-process
+- Need to reset database credentials for security reasons
+- Cache table missing errors (`Table 'db.cache' doesn't exist`)
+- Laravel artisan command failures
+- PHP or database connection issues
+
+## Generated Database Password
+
+The script will print the generated database password to your console. Please make a note of this password. It will also be automatically written into your Laravel project's .env file.
 
 Example output during execution:
 
@@ -138,19 +175,35 @@ Open http://127.0.0.1:8000 (or the URL displayed by php artisan serve).
 
 If you encounter any issues, especially "Access denied" errors or the script hanging during MySQL setup, consider these common solutions:
 
-MySQL Root Access (Sudoers Configuration):
+### Common Issues and Solutions
+
+**1. SQLSTATE[HY000] [1045] Access Denied Errors**
+
+This is often caused by passwords with shell-unsafe characters. **Use the repair mode:**
+
+```bash
+python setup_laravel_jetstream_sudo.py your-project-name --repair
+```
+
+The repair mode will:
+- Generate a new shell-safe password
+- Reset the MySQL user credentials
+- Update your .env file
+- Complete the Laravel setup
+
+**2. MySQL Root Access (Sudoers Configuration)**
 
 Most likely cause: The script relies on your system user being able to execute sudo mysql without a password prompt.
 
 Verify: Run sudo mysql -e "SELECT USER();" in a new terminal. If it asks for a password, you need to configure your sudoers file as described in Important Pre-requisites.
 
-Verify .env File:
+**3. Verify .env File**
 
 Open your project's .env file (e.g., my-awesome-app/.env).
 
 Ensure that DB_DATABASE, DB_USERNAME, and DB_PASSWORD exactly match the database name, user, and the generated password.
 
-Manual MySQL Connection Test:
+**4. Manual MySQL Connection Test**
 
 Open a new terminal and try to connect to your MySQL database manually using the generated credentials:
 
@@ -162,7 +215,30 @@ mysql -u [your_db_user] -p
 
 If this fails, the problem is specifically with the database user's permissions or password within MySQL, independent of the Laravel application.
 
-Firewall Issues:
+**5. Laravel Artisan Command Failures**
+
+If you see errors like "Command failed: php artisan migrate:status", the repair mode now includes:
+- Project structure validation (checks for artisan file and .env)
+- PHP availability testing  
+- Progressive database connection testing
+- Robust error recovery for migration commands
+
+**6. Cache Table Missing Errors**
+
+If you see "Table 'your_db.cache' doesn't exist" errors, this is now automatically handled by:
+- Creating cache table migration with `php artisan cache:table`
+- Running migrations before cache operations
+- Proper command sequencing to avoid table dependency issues
+
+**7. Interrupted Installation**
+
+If the installation was interrupted mid-process, use repair mode:
+
+```bash
+python setup_laravel_jetstream_sudo.py your-project-name --repair
+```
+
+**8. Firewall Issues**
 
 Ensure no firewall software (e.g., ufw, firewalld, SELinux) on your system is blocking TCP port 3306 (the default MySQL port).
 

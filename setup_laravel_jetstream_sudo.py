@@ -283,6 +283,297 @@ def deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
         thread_status[thread_name] = False
 
 
+# --- Repair Functionality ---
+
+def read_env_file(project_path):
+    """
+    Reads the .env file and extracts database configuration.
+    Returns a dictionary with database settings or None if not found.
+    """
+    env_path = os.path.join(project_path, '.env')
+    
+    if not os.path.exists(env_path):
+        raise FileNotFoundError(f".env file not found at {env_path}")
+    
+    env_config = {}
+    
+    try:
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    # Remove quotes if present
+                    value = value.strip('\'"')
+                    env_config[key] = value
+        
+        # Extract database configuration
+        db_config = {
+            'name': env_config.get('DB_DATABASE'),
+            'user': env_config.get('DB_USERNAME'),
+            'host': env_config.get('DB_HOST', '127.0.0.1'),
+            'port': env_config.get('DB_PORT', '3306')
+        }
+        
+        # Validate required fields
+        if not db_config['name'] or not db_config['user']:
+            raise ValueError("Missing DB_DATABASE or DB_USERNAME in .env file")
+        
+        return db_config, env_config
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to read .env file: {e}")
+
+
+def repair_mysql_user(db_config, new_password):
+    """
+    Resets the MySQL user password and ensures proper permissions.
+    """
+    db_name = db_config['name']
+    db_user = db_config['user']
+    
+    print(f"\n--- Repairing MySQL User '{db_user}' ---")
+    
+    try:
+        mysql_commands = [
+            # Drop user if exists to ensure clean state
+            f"DROP USER IF EXISTS '{db_user}'@'localhost';",
+            # Recreate user with new password
+            f"CREATE USER '{db_user}'@'localhost' IDENTIFIED BY '{new_password}';",
+            f"ALTER USER '{db_user}'@'localhost' IDENTIFIED WITH mysql_native_password BY '{new_password}';",
+            f"GRANT ALL PRIVILEGES ON {db_name}.* TO '{db_user}'@'localhost';",
+            "FLUSH PRIVILEGES;"
+        ]
+        
+        for cmd_sql in mysql_commands:
+            print(f"Executing MySQL command: {cmd_sql.split(';')[0]}...")
+            escaped_sql = shlex.quote(cmd_sql)
+            run_command(f"sudo mysql -e {escaped_sql}",
+                        success_message="MySQL command executed.",
+                        error_message="MySQL command failed.")
+        
+        print(f"SUCCESS: MySQL user '{db_user}' repaired with new password.")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: Failed to repair MySQL user: {e}")
+        return False
+
+
+def update_env_password(project_path, new_password):
+    """
+    Updates the .env file with the new database password.
+    """
+    env_path = os.path.join(project_path, '.env')
+    
+    try:
+        with open(env_path, 'r') as f:
+            lines = f.readlines()
+        
+        new_lines = []
+        password_updated = False
+        
+        for line in lines:
+            if line.strip().startswith('DB_PASSWORD='):
+                new_lines.append(f'DB_PASSWORD={new_password}\n')
+                password_updated = True
+            else:
+                new_lines.append(line)
+        
+        # Add DB_PASSWORD if it wasn't found
+        if not password_updated:
+            new_lines.append(f'DB_PASSWORD={new_password}\n')
+        
+        with open(env_path, 'w') as f:
+            f.writelines(new_lines)
+        
+        print(f"SUCCESS: .env file updated with new password.")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: Failed to update .env file: {e}")
+        return False
+
+
+def finalize_laravel_installation(project_path):
+    """
+    Completes the Laravel installation by running migrations and clearing caches.
+    """
+    print(f"\n--- Finalizing Laravel Installation ---")
+    
+    # Validate Laravel project structure
+    artisan_path = os.path.join(project_path, 'artisan')
+    if not os.path.exists(artisan_path):
+        raise RuntimeError(f"Laravel artisan file not found at {artisan_path}")
+    
+    env_path = os.path.join(project_path, '.env')
+    if not os.path.exists(env_path):
+        raise RuntimeError(f"Laravel .env file not found at {env_path}")
+    
+    print(f"Laravel project structure validated at: {project_path}")
+    
+    try:
+        # Test PHP availability
+        run_command(
+            "php --version",
+            success_message="PHP availability confirmed.",
+            cwd=project_path
+        )
+        
+        # Clear configuration cache (safe to do before DB setup)
+        run_command(
+            "php artisan config:clear",
+            success_message="Configuration cache cleared.",
+            cwd=project_path,
+            error_message="Config cache clear failed - continuing anyway"
+        )
+        
+        # Test basic database connection
+        try:
+            # First try a simple artisan command to test Laravel setup
+            run_command(
+                "php artisan --version",
+                success_message="Laravel artisan is working.",
+                cwd=project_path
+            )
+            
+            # Try to test database connection
+            run_command(
+                "php artisan migrate:status",
+                success_message="Database connection verified.",
+                cwd=project_path
+            )
+        except RuntimeError as e:
+            print(f"WARNING: Database connection test failed ({e})")
+            print("Attempting to proceed with migrations - this may create the required tables...")
+        
+        # Create cache table migration if using database cache driver
+        try:
+            run_command(
+                "php artisan cache:table",
+                success_message="Cache table migration created.",
+                cwd=project_path
+            )
+        except RuntimeError as e:
+            print(f"INFO: Cache table migration creation failed ({e})")
+            print("This is normal if the migration already exists.")
+        
+        # Run migrations to create all required tables including cache table
+        try:
+            run_command(
+                "php artisan migrate --force",
+                success_message="Database migrations completed.",
+                cwd=project_path
+            )
+        except RuntimeError as e:
+            print(f"ERROR: Migration failed - {e}")
+            print("Checking if this is due to missing migrations...")
+            
+            # Try to run migrations without --force first
+            try:
+                run_command(
+                    "php artisan migrate",
+                    success_message="Database migrations completed (without force).",
+                    cwd=project_path
+                )
+            except RuntimeError:
+                raise RuntimeError(f"Database migrations failed: {e}")
+        
+        # Generate fresh application key if needed
+        run_command(
+            "php artisan key:generate --force",
+            success_message="Application key generated.",
+            cwd=project_path
+        )
+        
+        # Now safely clear application cache (after cache table exists)
+        run_command(
+            "php artisan cache:clear", 
+            success_message="Application cache cleared.",
+            cwd=project_path,
+            error_message="Cache clear failed (cache table may not exist - this is not critical)",
+            ignore_error_codes=[1]  # Ignore cache clear failures
+        )
+        
+        # Clear and optimize
+        run_command(
+            "php artisan optimize:clear",
+            success_message="Laravel optimization cleared.",
+            cwd=project_path
+        )
+        
+        print("SUCCESS: Laravel installation finalized.")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: Failed to finalize Laravel installation: {e}")
+        return False
+
+
+def repair_installation(project_name):
+    """
+    Main repair function that orchestrates the repair process.
+    """
+    current_dir = os.getcwd()
+    project_path = os.path.join(current_dir, project_name)
+    
+    print(f"\n--- Starting Installation Repair for '{project_name}' ---")
+    
+    # Validate project directory exists
+    if not os.path.exists(project_path):
+        raise FileNotFoundError(f"Project directory not found: {project_path}")
+    
+    # Check if it's a Laravel project
+    if not os.path.exists(os.path.join(project_path, 'artisan')):
+        raise ValueError(f"Not a Laravel project: {project_path} (artisan file not found)")
+    
+    try:
+        # Step 1: Read existing configuration
+        print("Step 1: Reading existing .env configuration...")
+        db_config, env_config = read_env_file(project_path)
+        print(f"Found database: '{db_config['name']}' with user: '{db_config['user']}'")
+        
+        # Step 2: Generate new secure password
+        print("Step 2: Generating new secure password...")
+        new_password = generate_secure_password()
+        print(f"Generated new password: \033[93m{new_password}\033[0m")
+        
+        # Step 3: Repair MySQL user
+        print("Step 3: Repairing MySQL user...")
+        if not repair_mysql_user(db_config, new_password):
+            raise RuntimeError("MySQL user repair failed")
+        
+        # Step 4: Update .env file
+        print("Step 4: Updating .env file...")
+        if not update_env_password(project_path, new_password):
+            raise RuntimeError(".env file update failed")
+        
+        # Step 5: Finalize Laravel installation
+        print("Step 5: Finalizing Laravel installation...")
+        if not finalize_laravel_installation(project_path):
+            raise RuntimeError("Laravel finalization failed")
+        
+        print(f"\n" + "="*60)
+        print(" 🔧 REPAIR COMPLETED SUCCESSFULLY! 🔧 ".center(60))
+        print("="*60)
+        print(f"\nProject '{project_name}' has been repaired!")
+        print(f"Database: '{db_config['name']}' with user: '{db_config['user']}'")
+        print(f"New password: \033[93m{new_password}\033[0m")
+        print(f"\nYour Laravel application should now be working properly.")
+        print(f"\nTo test, run:")
+        print(f"cd {project_name}")
+        print(f"php artisan serve")
+        
+        return True
+        
+    except Exception as e:
+        print(f"\n" + "="*60)
+        print(" ❌ REPAIR FAILED! ❌ ".center(60))
+        print("="*60)
+        print(f"Error: {e}")
+        return False
+
+
 # --- Main Script Logic ---
 def main():
     parser = argparse.ArgumentParser(
@@ -290,12 +581,36 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("project_name", help="The name of your Laravel project (e.g., my-app). This will be the directory name.")
-    parser.add_argument("--dbname", required=True, help="MySQL database name for the project.")
-    parser.add_argument("--dbuser", required=True, help="MySQL database username for the project.")
+    parser.add_argument("--dbname", help="MySQL database name for the project. Required for new installations.")
+    parser.add_argument("--dbuser", help="MySQL database username for the project. Required for new installations.")
+    parser.add_argument("--repair", action="store_true", 
+                        help="Repair a broken installation by reading existing .env, generating new password, and completing setup.")
 
     args = parser.parse_args()
 
     project_name = args.project_name
+
+    # Handle repair mode
+    if args.repair:
+        print("\n" + "="*60)
+        print(" Laravel Jetstream Installation Repair ".center(60))
+        print("="*60)
+        print(f"\nRepairing Laravel project '{project_name}'...")
+        
+        try:
+            success = repair_installation(project_name)
+            sys.exit(0 if success else 1)
+        except Exception as e:
+            print(f"FATAL ERROR: {e}")
+            sys.exit(1)
+    
+    # Validate required arguments for new installations
+    if not args.dbname or not args.dbuser:
+        print("ERROR: --dbname and --dbuser are required for new installations.")
+        print("Use --repair flag to repair an existing installation.")
+        parser.print_help()
+        sys.exit(1)
+
     db_name = args.dbname
     db_user = args.dbuser
     db_pass = generate_secure_password()
