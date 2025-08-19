@@ -270,6 +270,18 @@ def deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
         )
 
         run_command(
+            "php artisan lang:publish",
+            success_message="Language files published.",
+            cwd=project_path
+        )
+
+        run_command(
+            "php artisan vendor:publish --tag=laravel-errors",
+            success_message="Laravel error views published.",
+            cwd=project_path
+        )
+
+        run_command(
             "php artisan optimize:clear",
             success_message="Laravel caches cleared.",
             cwd=project_path
