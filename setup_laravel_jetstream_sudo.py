@@ -6,17 +6,20 @@ import re
 import random
 import string
 import threading
-import time 
+import time
+import shlex 
 
 def generate_secure_password(length=16):
-    """Generates a secure password meeting strict requirements (e.g., am1g0$MuyAm1g0$)."""
+    """Generates a secure password meeting strict requirements, shell-safe and .env-safe."""
     if length < 12:
         length = 12 
 
     digits = string.digits
     uppercase = string.ascii_uppercase
     lowercase = string.ascii_lowercase
-    special_chars = '!@#$%^&*()-_=+[{]}\|;:,.<>/?' 
+    # Use only shell-safe and .env-safe special characters
+    # Removed: ! $ ` " ' \ | ; < > ? * ( ) [ ] { } & 
+    special_chars = '@#%^-_=+:,.~'
 
     password = [
         random.choice(digits),
@@ -94,12 +97,12 @@ def setup_mysql_thread_target(db_config, db_ready_event, thread_status):
             f"GRANT ALL PRIVILEGES ON {db_name}.* TO '{db_user}'@'localhost';",
             "FLUSH PRIVILEGES;"
         ]
-        
-        full_mysql_command_prefix = f"sudo mysql -e" 
 
         for cmd_sql in mysql_commands:
             print(f"Executing MySQL command: {cmd_sql.split(';')[0]}...") 
-            run_command(f"{full_mysql_command_prefix} \"{cmd_sql}\"", 
+            # Use shlex.quote to properly escape the SQL command for shell execution
+            escaped_sql = shlex.quote(cmd_sql)
+            run_command(f"sudo mysql -e {escaped_sql}", 
                         success_message="MySQL command executed.",
                         error_message="MySQL command failed.")
         
