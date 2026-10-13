@@ -602,10 +602,21 @@ def main():
     parser.add_argument("project_name", help="The name of your Laravel project (e.g., my-app). This will be the directory name.")
     parser.add_argument("--dbname", help="MySQL database name for the project. Required for new installations.")
     parser.add_argument("--dbuser", help="MySQL database username for the project. Required for new installations.")
-    parser.add_argument("--repair", action="store_true", 
+    parser.add_argument("--repair", action="store_true",
                         help="Repair a broken installation by reading existing .env, generating new password, and completing setup.")
+    parser.add_argument("--db-driver", choices=["mysql", "pgsql"], default="mysql",
+                        help="Database driver. 'pgsql' requires --skip-db-provision.")
+    parser.add_argument("--skip-db-provision", action="store_true",
+                        help="Assume the database/role already exist (provisioned externally, e.g. by Ansible). "
+                             "Required when --db-driver pgsql is used — this script never provisions Postgres itself.")
+    parser.add_argument("--yes", action="store_true",
+                        help="Skip the interactive confirmation prompt (for automated/non-interactive runs).")
 
     args = parser.parse_args()
+
+    if args.db_driver == "pgsql" and not args.skip_db_provision:
+        print("ERROR: --db-driver pgsql requires --skip-db-provision; this script does not provision Postgres databases.")
+        sys.exit(1)
 
     project_name = args.project_name
 
