@@ -128,7 +128,8 @@ def deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
     project_name = project_config['name']
     project_path = project_config['path']
     app_name_formatted = project_config['app_name_formatted']
-    db_config = project_config['db_config'] 
+    db_config = project_config['db_config']
+    driver_defaults = DB_DRIVER_DEFAULTS[project_config.get('db_driver', 'mysql')]
     thread_name = threading.current_thread().name
 
     try:
@@ -161,9 +162,9 @@ def deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
             "APP_URL": "http://localhost",
             "LOG_CHANNEL": "stack",
             "LOG_LEVEL": "debug",
-            "DB_CONNECTION": "mysql",
+            "DB_CONNECTION": driver_defaults["connection"],
             "DB_HOST": "127.0.0.1",
-            "DB_PORT": "3306",
+            "DB_PORT": driver_defaults["port"],
             "DB_DATABASE": db_config['name'],
             "DB_USERNAME": db_config['user'],
             "DB_PASSWORD": db_config['pass'],
