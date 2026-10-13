@@ -702,24 +702,29 @@ def main():
     print("Please make a note of this password. It will also be written to your .env file.")
 
     db_ready_event = threading.Event()
-    thread_status = {} 
+    thread_status = {}
+    mysql_thread = None
 
-    mysql_thread = threading.Thread(
-        target=setup_mysql_thread_target,
-        name="MySQL_Setup_Thread",
-        args=(db_config, db_ready_event, thread_status)
-    )
+    if args.skip_db_provision:
+        thread_status["MySQL_Setup_Thread"] = True
+        db_ready_event.set()
+    else:
+        mysql_thread = threading.Thread(
+            target=setup_mysql_thread_target,
+            name="MySQL_Setup_Thread",
+            args=(db_config, db_ready_event, thread_status)
+        )
+        mysql_thread.start()
 
     codebase_thread = threading.Thread(
         target=deploy_codebase_thread_target,
         name="Codebase_Deployment_Thread",
         args=(project_config, db_ready_event, thread_status)
     )
-
-    mysql_thread.start()
     codebase_thread.start()
 
-    mysql_thread.join()
+    if mysql_thread is not None:
+        mysql_thread.join()
     codebase_thread.join()
 
     overall_success = thread_status.get("MySQL_Setup_Thread", False) and thread_status.get("Codebase_Deployment_Thread", False)
