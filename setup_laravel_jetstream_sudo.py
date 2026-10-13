@@ -643,7 +643,15 @@ def main():
 
     db_name = args.dbname
     db_user = args.dbuser
-    db_pass = generate_secure_password()
+
+    if args.skip_db_provision:
+        db_pass = os.environ.get("BOOTSTRAP_DB_PASSWORD")
+        if not db_pass:
+            print("ERROR: --skip-db-provision requires the BOOTSTRAP_DB_PASSWORD environment variable "
+                  "to be set to the pre-provisioned database password.")
+            sys.exit(1)
+    else:
+        db_pass = generate_secure_password()
 
     current_dir = os.getcwd()
     project_path = os.path.join(current_dir, project_name)
