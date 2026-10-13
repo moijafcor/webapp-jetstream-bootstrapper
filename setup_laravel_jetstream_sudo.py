@@ -578,7 +578,7 @@ def repair_installation(project_name):
         print("="*60)
         print(f"\nProject '{project_name}' has been repaired!")
         print(f"Database: '{db_config['name']}' with user: '{db_config['user']}'")
-        print(f"New password: [REDACTED — written to .env, not displayed]")
+        print("New password: [REDACTED — written to .env, not displayed]")
         print(f"\nYour Laravel application should now be working properly.")
         print(f"\nTo test, run:")
         print(f"cd {project_name}")
@@ -616,7 +616,8 @@ def main():
     args = parser.parse_args()
 
     if args.db_driver == "pgsql" and not args.skip_db_provision:
-        print("ERROR: --db-driver pgsql requires --skip-db-provision; this script does not provision Postgres databases.")
+        print("ERROR: --db-driver pgsql requires --skip-db-provision; "
+              "this script does not provision Postgres databases.")
         sys.exit(1)
 
     project_name = args.project_name

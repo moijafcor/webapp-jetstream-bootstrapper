@@ -658,8 +658,234 @@ APP_DEBUG=true
         mock_repair_mysql.return_value = False
         
         result = repair_installation('test_project')
-        
+
         assert result is False
+
+
+class TestDbDriverFlag:
+    """Test suite for --db-driver / --skip-db-provision validation (Step 1.2)."""
+
+    @patch('sys.exit')
+    def test_pgsql_requires_skip_db_provision(self, mock_exit, capsys):
+        """pgsql without --skip-db-provision must exit 1 with the exact message."""
+        mock_exit.side_effect = SystemExit
+        test_args = ['script.py', 'testapp', '--dbname', 'x', '--dbuser', 'x', '--db-driver', 'pgsql']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            with pytest.raises(SystemExit):
+                main()
+
+        captured = capsys.readouterr()
+        assert ("ERROR: --db-driver pgsql requires --skip-db-provision; "
+                "this script does not provision Postgres databases.") in captured.out
+        mock_exit.assert_called_once_with(1)
+
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    @patch('sys.exit')
+    def test_mysql_driver_does_not_require_skip_db_provision(self, mock_exit, mock_run_command):
+        """Default mysql driver is unaffected by the new pgsql guard."""
+        mock_exit.side_effect = AssertionError("sys.exit should not be reached by the pgsql guard for mysql")
+        test_args = ['script.py', 'testapp', '--dbname', 'x', '--dbuser', 'x']
+        with patch('sys.argv', test_args), \
+             patch('setup_laravel_jetstream_sudo.setup_mysql_thread_target'), \
+             patch('setup_laravel_jetstream_sudo.deploy_codebase_thread_target'), \
+             patch('builtins.input', return_value='yes'), \
+             patch('sys.exit') as mock_exit2:
+            mock_exit2.side_effect = SystemExit
+            from setup_laravel_jetstream_sudo import main
+            with pytest.raises(SystemExit):
+                main()
+            # The only sys.exit reached is the end-of-run failure exit (both
+            # thread targets are mocked no-ops so overall_success is False) —
+            # not the pgsql guard, which never fires for the mysql default.
+            mock_exit2.assert_called_once_with(1)
+
+
+class TestSkipDbProvisionPassword:
+    """Test suite for BOOTSTRAP_DB_PASSWORD handling (Step 1.3)."""
+
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    @patch('sys.exit')
+    def test_skip_db_provision_requires_env_var(self, mock_exit, mock_run_command, monkeypatch, capsys):
+        """--skip-db-provision with no BOOTSTRAP_DB_PASSWORD must exit 1 before any command runs."""
+        monkeypatch.delenv('BOOTSTRAP_DB_PASSWORD', raising=False)
+        mock_exit.side_effect = SystemExit
+        test_args = ['script.py', 'testapp', '--dbname', 'x', '--dbuser', 'x',
+                     '--db-driver', 'pgsql', '--skip-db-provision']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            with pytest.raises(SystemExit):
+                main()
+
+        captured = capsys.readouterr()
+        assert "BOOTSTRAP_DB_PASSWORD" in captured.out
+        mock_exit.assert_called_once_with(1)
+        mock_run_command.assert_not_called()
+
+    @patch('setup_laravel_jetstream_sudo.deploy_codebase_thread_target')
+    @patch('sys.exit')
+    def test_skip_db_provision_reads_password_from_env(self, mock_exit, mock_deploy, monkeypatch):
+        """With BOOTSTRAP_DB_PASSWORD set, main() threads that exact value through, not a generated one."""
+        monkeypatch.setenv('BOOTSTRAP_DB_PASSWORD', 'env-supplied-pw')
+        mock_exit.side_effect = SystemExit
+        test_args = ['script.py', 'testapp', '--dbname', 'x', '--dbuser', 'x',
+                     '--db-driver', 'pgsql', '--skip-db-provision', '--yes']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            # deploy_codebase_thread_target is mocked, so it never flips
+            # thread_status['Codebase_Deployment_Thread'] — main() reaches
+            # its overall_success check and exits 1. We only care that the
+            # env-supplied password reached project_config before that.
+            with pytest.raises(SystemExit):
+                main()
+
+        assert mock_deploy.call_count == 1
+        project_config = mock_deploy.call_args[0][0]
+        assert project_config['db_config']['pass'] == 'env-supplied-pw'
+        assert project_config['db_driver'] == 'pgsql'
+
+
+class TestDbDriverEnvVars:
+    """Test suite for DB_CONNECTION/DB_PORT per db_driver in the written .env (Step 1.5)."""
+
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    @patch('os.chdir')
+    def test_pgsql_driver_sets_connection_and_port(self, mock_chdir, mock_run_command):
+        with tempfile.TemporaryDirectory() as project_path:
+            with open(os.path.join(project_path, '.env'), 'w') as f:
+                f.write("APP_KEY=\n")
+
+            project_config = {
+                'name': 'proj',
+                'path': project_path,
+                'app_name_formatted': 'Proj',
+                'db_config': {'name': 'n', 'user': 'u', 'pass': 'p'},
+                'db_driver': 'pgsql',
+            }
+            db_ready_event = threading.Event()
+            db_ready_event.set()
+            thread_status = {'MySQL_Setup_Thread': True}
+            mock_run_command.return_value = True
+
+            deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
+
+            with open(os.path.join(project_path, '.env')) as f:
+                content = f.read()
+            assert 'DB_CONNECTION=pgsql' in content
+            assert 'DB_PORT=5432' in content
+
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    @patch('os.chdir')
+    def test_mysql_driver_default_unchanged(self, mock_chdir, mock_run_command):
+        with tempfile.TemporaryDirectory() as project_path:
+            with open(os.path.join(project_path, '.env'), 'w') as f:
+                f.write("APP_KEY=\n")
+
+            project_config = {
+                'name': 'proj',
+                'path': project_path,
+                'app_name_formatted': 'Proj',
+                'db_config': {'name': 'n', 'user': 'u', 'pass': 'p'},
+                'db_driver': 'mysql',
+            }
+            db_ready_event = threading.Event()
+            db_ready_event.set()
+            thread_status = {'MySQL_Setup_Thread': True}
+            mock_run_command.return_value = True
+
+            deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
+
+            with open(os.path.join(project_path, '.env')) as f:
+                content = f.read()
+            assert 'DB_CONNECTION=mysql' in content
+            assert 'DB_PORT=3306' in content
+
+
+class TestSkipDbProvisionNoMySqlThread:
+    """Test suite for the skip-db-provision MySQL-thread bypass (Step 1.6)."""
+
+    @patch('setup_laravel_jetstream_sudo.run_command')
+    def test_skip_db_provision_runs_no_mysql_command(self, mock_run_command, tmp_path, monkeypatch):
+        monkeypatch.setenv('BOOTSTRAP_DB_PASSWORD', 'env-pw')
+        monkeypatch.chdir(tmp_path)
+
+        project_dir = tmp_path / 'proj'
+        project_dir.mkdir()
+        (project_dir / '.env').write_text("APP_KEY=\n")
+
+        mock_run_command.return_value = True
+
+        test_args = ['script.py', 'proj', '--dbname', 'n', '--dbuser', 'u',
+                     '--db-driver', 'pgsql', '--skip-db-provision', '--yes']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            main()
+
+        # codebase_thread must have proceeded past db_ready_event.wait()
+        # without hanging (main() returning at all proves this), and no
+        # MySQL provisioning command must ever have run.
+        assert mock_run_command.call_count > 0
+        for call_args in mock_run_command.call_args_list:
+            command = call_args[0][0]
+            assert 'mysql' not in command.lower()
+
+
+class TestYesFlagSkipsConfirmation:
+    """Test suite for --yes bypassing the interactive confirmation prompt (Step 1.7)."""
+
+    @patch('setup_laravel_jetstream_sudo.deploy_codebase_thread_target')
+    @patch('setup_laravel_jetstream_sudo.setup_mysql_thread_target')
+    @patch('sys.exit')
+    @patch('builtins.input')
+    def test_yes_flag_skips_confirmation_prompt(self, mock_input, mock_exit, mock_mysql_thread, mock_deploy_thread):
+        mock_input.side_effect = AssertionError("input() should not be called when --yes is set")
+        mock_exit.side_effect = SystemExit
+
+        test_args = ['script.py', 'proj', '--dbname', 'n', '--dbuser', 'u', '--yes']
+        with patch('sys.argv', test_args):
+            from setup_laravel_jetstream_sudo import main
+            with pytest.raises(SystemExit):
+                main()
+
+        mock_input.assert_not_called()
+
+
+class TestNoPasswordPrintedToStdout:
+    """Test suite for password redaction across install and repair paths (Step 1.8)."""
+
+    @patch('setup_laravel_jetstream_sudo.deploy_codebase_thread_target')
+    @patch('setup_laravel_jetstream_sudo.setup_mysql_thread_target')
+    @patch('setup_laravel_jetstream_sudo.generate_secure_password')
+    @patch('builtins.input', return_value='yes')
+    def test_install_path_never_prints_password(self, mock_input, mock_gen_password,
+                                                mock_mysql_thread, mock_deploy_thread, capsys):
+        mock_gen_password.return_value = 'S3cr3tCanaryPW'
+        test_args = ['script.py', 'proj', '--dbname', 'n', '--dbuser', 'u']
+        with patch('sys.argv', test_args), patch('sys.exit') as mock_exit:
+            mock_exit.side_effect = SystemExit
+            from setup_laravel_jetstream_sudo import main
+            with pytest.raises(SystemExit):
+                main()
+
+        captured = capsys.readouterr()
+        assert 'S3cr3tCanaryPW' not in captured.out
+
+    @patch('setup_laravel_jetstream_sudo.finalize_laravel_installation', return_value=True)
+    @patch('setup_laravel_jetstream_sudo.update_env_password', return_value=True)
+    @patch('setup_laravel_jetstream_sudo.repair_mysql_user', return_value=True)
+    @patch('setup_laravel_jetstream_sudo.read_env_file')
+    @patch('setup_laravel_jetstream_sudo.generate_secure_password')
+    @patch('os.path.exists', return_value=True)
+    def test_repair_path_never_prints_password(self, mock_exists, mock_gen_password, mock_read_env, mock_repair_mysql,
+                                               mock_update_env, mock_finalize, capsys):
+        mock_gen_password.return_value = 'R3pairCanaryPW'
+        mock_read_env.return_value = ({'name': 'db', 'user': 'u'}, {'APP_NAME': 'App'})
+
+        result = repair_installation('proj')
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert 'R3pairCanaryPW' not in captured.out
 
 
 class TestRepairIntegration:
