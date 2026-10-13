@@ -556,7 +556,7 @@ def repair_installation(project_name):
         # Step 2: Generate new secure password
         print("Step 2: Generating new secure password...")
         new_password = generate_secure_password()
-        print(f"Generated new password: \033[93m{new_password}\033[0m")
+        print(f"Generated new password for '{db_config['user']}': [REDACTED — written to .env, not displayed]")
         
         # Step 3: Repair MySQL user
         print("Step 3: Repairing MySQL user...")
@@ -578,7 +578,7 @@ def repair_installation(project_name):
         print("="*60)
         print(f"\nProject '{project_name}' has been repaired!")
         print(f"Database: '{db_config['name']}' with user: '{db_config['user']}'")
-        print(f"New password: \033[93m{new_password}\033[0m")
+        print(f"New password: [REDACTED — written to .env, not displayed]")
         print(f"\nYour Laravel application should now be working properly.")
         print(f"\nTo test, run:")
         print(f"cd {project_name}")
@@ -699,8 +699,8 @@ def main():
             print("Installation cancelled.")
             sys.exit(0)
     
-    print(f"\nGenerated database password for '{db_user}': \033[93m{db_pass}\033[0m")
-    print("Please make a note of this password. It will also be written to your .env file.")
+    print(f"\nGenerated database password for '{db_user}': [REDACTED — written to .env, not displayed]")
+    print("The password has been written to your .env file; open it there if you need it.")
 
     db_ready_event = threading.Event()
     thread_status = {}
@@ -741,7 +741,7 @@ def main():
     print(" 🎉 Installation Complete! 🎉 ".center(60))
     print("="*60)
     print(f"\nYour Laravel Jetstream project '{project_name}' is ready!")
-    print(f"\nDatabase user '{db_user}' password: \033[93m{db_pass}\033[0m (This is also in your project's .env file)")
+    print(f"\nDatabase user '{db_user}' password: [REDACTED — written to .env, not displayed]")
     print(f"\nTo start the development server, navigate into your project directory:")
     print(f"cd {project_name}")
     print(f"\nThen run:")
