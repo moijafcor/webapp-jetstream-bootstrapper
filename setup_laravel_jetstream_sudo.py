@@ -693,10 +693,11 @@ def main():
     print("WARNING: This script will create a new directory and modify system databases.")
     print("         Ensure you have necessary permissions and have backed up critical data.")
 
-    confirmation = input("Do you wish to proceed? (yes/no): ").lower()
-    if confirmation != 'yes':
-        print("Installation cancelled.")
-        sys.exit(0)
+    if not args.yes:
+        confirmation = input("Do you wish to proceed? (yes/no): ").lower()
+        if confirmation != 'yes':
+            print("Installation cancelled.")
+            sys.exit(0)
     
     print(f"\nGenerated database password for '{db_user}': \033[93m{db_pass}\033[0m")
     print("Please make a note of this password. It will also be written to your .env file.")
