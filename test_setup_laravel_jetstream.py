@@ -12,7 +12,7 @@ import shlex
 import string
 import threading
 import time
-from unittest.mock import Mock, patch, MagicMock, call
+from unittest.mock import Mock, patch, MagicMock, call, ANY
 from setup_laravel_jetstream_sudo import (
     generate_secure_password,
     run_command,
@@ -139,8 +139,8 @@ class TestRunCommand:
         mock_popen.assert_called_with(
             'test command',
             shell=True,
-            stdout=pytest.unittest.mock.ANY,
-            stderr=pytest.unittest.mock.ANY,
+            stdout=ANY,
+            stderr=ANY,
             text=True,
             cwd='/test/dir'
         )
@@ -190,9 +190,17 @@ class TestMySQLSetup:
         thread_status = {}
         
         mock_run_command.return_value = True
-        
-        setup_mysql_thread_target(db_config, db_ready_event, thread_status)
-        
+
+        # thread_status is keyed by the calling thread's name in production
+        # usage (threading.current_thread().name) — run under the same
+        # thread name the script actually uses so the key matches.
+        t = threading.Thread(
+            target=setup_mysql_thread_target,
+            name="MySQL_Setup_Thread",
+            args=(db_config, db_ready_event, thread_status))
+        t.start()
+        t.join()
+
         assert db_ready_event.is_set()
         assert thread_status.get('MySQL_Setup_Thread') is True
     
@@ -210,9 +218,14 @@ class TestMySQLSetup:
         
         # Make run_command fail
         mock_run_command.side_effect = RuntimeError("MySQL command failed")
-        
-        setup_mysql_thread_target(db_config, db_ready_event, thread_status)
-        
+
+        t = threading.Thread(
+            target=setup_mysql_thread_target,
+            name="MySQL_Setup_Thread",
+            args=(db_config, db_ready_event, thread_status))
+        t.start()
+        t.join()
+
         # Event should still be set even on failure
         assert db_ready_event.is_set()
         assert thread_status.get('MySQL_Setup_Thread') is False
@@ -651,40 +664,47 @@ class TestRepairIntegration:
     def test_main_repair_mode_success(self, mock_exit, mock_repair):
         """Test main function in repair mode with success."""
         mock_repair.return_value = True
-        
+        mock_exit.side_effect = SystemExit
+
         # Mock command line args
         test_args = ['script.py', 'test_project', '--repair']
         with patch('sys.argv', test_args):
             from setup_laravel_jetstream_sudo import main
-            main()
-        
+            with pytest.raises(SystemExit):
+                main()
+
         mock_repair.assert_called_once_with('test_project')
         mock_exit.assert_called_once_with(0)
-    
+
     @patch('setup_laravel_jetstream_sudo.repair_installation')
     @patch('sys.exit')
     def test_main_repair_mode_failure(self, mock_exit, mock_repair):
         """Test main function in repair mode with failure."""
         mock_repair.return_value = False
-        
+        mock_exit.side_effect = SystemExit
+
         # Mock command line args
         test_args = ['script.py', 'test_project', '--repair']
         with patch('sys.argv', test_args):
             from setup_laravel_jetstream_sudo import main
-            main()
-        
+            with pytest.raises(SystemExit):
+                main()
+
         mock_repair.assert_called_once_with('test_project')
         mock_exit.assert_called_once_with(1)
-    
+
     @patch('sys.exit')
     def test_main_missing_required_args_for_new_install(self, mock_exit):
         """Test main function validates required args for new installations."""
+        mock_exit.side_effect = SystemExit
+
         # Mock command line args without --dbname and --dbuser
         test_args = ['script.py', 'test_project']
         with patch('sys.argv', test_args):
             from setup_laravel_jetstream_sudo import main
-            main()
-        
+            with pytest.raises(SystemExit):
+                main()
+
         mock_exit.assert_called_once_with(1)
 
 

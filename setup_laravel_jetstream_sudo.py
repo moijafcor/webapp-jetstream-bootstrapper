@@ -332,7 +332,9 @@ def read_env_file(project_path):
             raise ValueError("Missing DB_DATABASE or DB_USERNAME in .env file")
         
         return db_config, env_config
-        
+
+    except ValueError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to read .env file: {e}")
 
