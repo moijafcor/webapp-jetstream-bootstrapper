@@ -7,7 +7,12 @@ import random
 import string
 import threading
 import time
-import shlex 
+import shlex
+
+DB_DRIVER_DEFAULTS = {
+    "mysql": {"connection": "mysql", "port": "3306"},
+    "pgsql": {"connection": "pgsql", "port": "5432"},
+}
 
 def generate_secure_password(length=16):
     """Generates a secure password meeting strict requirements, shell-safe and .env-safe."""
@@ -123,7 +128,8 @@ def deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
     project_name = project_config['name']
     project_path = project_config['path']
     app_name_formatted = project_config['app_name_formatted']
-    db_config = project_config['db_config'] 
+    db_config = project_config['db_config']
+    driver_defaults = DB_DRIVER_DEFAULTS[project_config.get('db_driver', 'mysql')]
     thread_name = threading.current_thread().name
 
     try:
@@ -156,9 +162,9 @@ def deploy_codebase_thread_target(project_config, db_ready_event, thread_status)
             "APP_URL": "http://localhost",
             "LOG_CHANNEL": "stack",
             "LOG_LEVEL": "debug",
-            "DB_CONNECTION": "mysql",
+            "DB_CONNECTION": driver_defaults["connection"],
             "DB_HOST": "127.0.0.1",
-            "DB_PORT": "3306",
+            "DB_PORT": driver_defaults["port"],
             "DB_DATABASE": db_config['name'],
             "DB_USERNAME": db_config['user'],
             "DB_PASSWORD": db_config['pass'],
@@ -332,7 +338,9 @@ def read_env_file(project_path):
             raise ValueError("Missing DB_DATABASE or DB_USERNAME in .env file")
         
         return db_config, env_config
-        
+
+    except ValueError:
+        raise
     except Exception as e:
         raise RuntimeError(f"Failed to read .env file: {e}")
 
@@ -548,7 +556,7 @@ def repair_installation(project_name):
         # Step 2: Generate new secure password
         print("Step 2: Generating new secure password...")
         new_password = generate_secure_password()
-        print(f"Generated new password: \033[93m{new_password}\033[0m")
+        print(f"Generated new password for '{db_config['user']}': [REDACTED — written to .env, not displayed]")
         
         # Step 3: Repair MySQL user
         print("Step 3: Repairing MySQL user...")
@@ -570,7 +578,7 @@ def repair_installation(project_name):
         print("="*60)
         print(f"\nProject '{project_name}' has been repaired!")
         print(f"Database: '{db_config['name']}' with user: '{db_config['user']}'")
-        print(f"New password: \033[93m{new_password}\033[0m")
+        print("New password: [REDACTED — written to .env, not displayed]")
         print(f"\nYour Laravel application should now be working properly.")
         print(f"\nTo test, run:")
         print(f"cd {project_name}")
@@ -595,10 +603,22 @@ def main():
     parser.add_argument("project_name", help="The name of your Laravel project (e.g., my-app). This will be the directory name.")
     parser.add_argument("--dbname", help="MySQL database name for the project. Required for new installations.")
     parser.add_argument("--dbuser", help="MySQL database username for the project. Required for new installations.")
-    parser.add_argument("--repair", action="store_true", 
+    parser.add_argument("--repair", action="store_true",
                         help="Repair a broken installation by reading existing .env, generating new password, and completing setup.")
+    parser.add_argument("--db-driver", choices=["mysql", "pgsql"], default="mysql",
+                        help="Database driver. 'pgsql' requires --skip-db-provision.")
+    parser.add_argument("--skip-db-provision", action="store_true",
+                        help="Assume the database/role already exist (provisioned externally, e.g. by Ansible). "
+                             "Required when --db-driver pgsql is used — this script never provisions Postgres itself.")
+    parser.add_argument("--yes", action="store_true",
+                        help="Skip the interactive confirmation prompt (for automated/non-interactive runs).")
 
     args = parser.parse_args()
+
+    if args.db_driver == "pgsql" and not args.skip_db_provision:
+        print("ERROR: --db-driver pgsql requires --skip-db-provision; "
+              "this script does not provision Postgres databases.")
+        sys.exit(1)
 
     project_name = args.project_name
 
@@ -625,7 +645,15 @@ def main():
 
     db_name = args.dbname
     db_user = args.dbuser
-    db_pass = generate_secure_password()
+
+    if args.skip_db_provision:
+        db_pass = os.environ.get("BOOTSTRAP_DB_PASSWORD")
+        if not db_pass:
+            print("ERROR: --skip-db-provision requires the BOOTSTRAP_DB_PASSWORD environment variable "
+                  "to be set to the pre-provisioned database password.")
+            sys.exit(1)
+    else:
+        db_pass = generate_secure_password()
 
     current_dir = os.getcwd()
     project_path = os.path.join(current_dir, project_name)
@@ -641,7 +669,8 @@ def main():
         'name': project_name,
         'path': project_path,
         'app_name_formatted': app_name_formatted,
-        'db_config': db_config 
+        'db_config': db_config,
+        'db_driver': args.db_driver
     }
 
     print("\n" + "="*60)
@@ -665,33 +694,39 @@ def main():
     print("WARNING: This script will create a new directory and modify system databases.")
     print("         Ensure you have necessary permissions and have backed up critical data.")
 
-    confirmation = input("Do you wish to proceed? (yes/no): ").lower()
-    if confirmation != 'yes':
-        print("Installation cancelled.")
-        sys.exit(0)
+    if not args.yes:
+        confirmation = input("Do you wish to proceed? (yes/no): ").lower()
+        if confirmation != 'yes':
+            print("Installation cancelled.")
+            sys.exit(0)
     
-    print(f"\nGenerated database password for '{db_user}': \033[93m{db_pass}\033[0m")
-    print("Please make a note of this password. It will also be written to your .env file.")
+    print(f"\nGenerated database password for '{db_user}': [REDACTED — written to .env, not displayed]")
+    print("The password has been written to your .env file; open it there if you need it.")
 
     db_ready_event = threading.Event()
-    thread_status = {} 
+    thread_status = {}
+    mysql_thread = None
 
-    mysql_thread = threading.Thread(
-        target=setup_mysql_thread_target,
-        name="MySQL_Setup_Thread",
-        args=(db_config, db_ready_event, thread_status)
-    )
+    if args.skip_db_provision:
+        thread_status["MySQL_Setup_Thread"] = True
+        db_ready_event.set()
+    else:
+        mysql_thread = threading.Thread(
+            target=setup_mysql_thread_target,
+            name="MySQL_Setup_Thread",
+            args=(db_config, db_ready_event, thread_status)
+        )
+        mysql_thread.start()
 
     codebase_thread = threading.Thread(
         target=deploy_codebase_thread_target,
         name="Codebase_Deployment_Thread",
         args=(project_config, db_ready_event, thread_status)
     )
-
-    mysql_thread.start()
     codebase_thread.start()
 
-    mysql_thread.join()
+    if mysql_thread is not None:
+        mysql_thread.join()
     codebase_thread.join()
 
     overall_success = thread_status.get("MySQL_Setup_Thread", False) and thread_status.get("Codebase_Deployment_Thread", False)
@@ -707,7 +742,7 @@ def main():
     print(" 🎉 Installation Complete! 🎉 ".center(60))
     print("="*60)
     print(f"\nYour Laravel Jetstream project '{project_name}' is ready!")
-    print(f"\nDatabase user '{db_user}' password: \033[93m{db_pass}\033[0m (This is also in your project's .env file)")
+    print(f"\nDatabase user '{db_user}' password: [REDACTED — written to .env, not displayed]")
     print(f"\nTo start the development server, navigate into your project directory:")
     print(f"cd {project_name}")
     print(f"\nThen run:")

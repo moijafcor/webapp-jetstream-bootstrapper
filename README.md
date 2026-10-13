@@ -78,8 +78,11 @@ python setup_laravel_jetstream_sudo.py [project_name] --dbname [database_name] -
 
 **For New Installations:**
 - `[project_name]` (positional, required): The name of your new Laravel project. This will also be the name of the directory created for your project.
-- `--dbname` (required): The name for the new MySQL database.
-- `--dbuser` (required): The username for the new MySQL database user.
+- `--dbname` (required): The name for the new database.
+- `--dbuser` (required): The username for the new database user.
+- `--db-driver` (optional, default `mysql`): `mysql` or `pgsql`. Using `pgsql` requires `--skip-db-provision` — this script never provisions Postgres databases itself, only MySQL.
+- `--skip-db-provision` (flag): Assume the database/role already exist, provisioned externally (e.g. by Ansible). When set, the database password is read from the `BOOTSTRAP_DB_PASSWORD` environment variable instead of being generated. Required when `--db-driver pgsql` is used.
+- `--yes` (flag): Skip the interactive confirmation prompt, for automated/non-interactive runs.
 
 **For Repair Mode:**
 - `[project_name]` (positional, required): The name of the existing Laravel project directory.
@@ -136,13 +139,13 @@ This is useful when:
 
 ## Generated Database Password
 
-The script will print the generated database password to your console. Please make a note of this password. It will also be automatically written into your Laravel project's .env file.
+The script no longer prints the generated (or repaired) database password to your console, in either the install or the repair path. It is written to your Laravel project's `.env` file — open it there if you need the value.
 
 Example output during execution:
 
 ```bash
-Generated database password for 'app_dev_user': Y0urS3cur3P@ssw0rd!
-Please make a note of this password. It will also be written to your .env file.
+Generated database password for 'app_dev_user': [REDACTED — written to .env, not displayed]
+The password has been written to your .env file; open it there if you need it.
 ```
 
 ### Post-Installation Steps
