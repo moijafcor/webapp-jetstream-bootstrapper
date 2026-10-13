@@ -7,7 +7,12 @@ import random
 import string
 import threading
 import time
-import shlex 
+import shlex
+
+DB_DRIVER_DEFAULTS = {
+    "mysql": {"connection": "mysql", "port": "3306"},
+    "pgsql": {"connection": "pgsql", "port": "5432"},
+}
 
 def generate_secure_password(length=16):
     """Generates a secure password meeting strict requirements, shell-safe and .env-safe."""
