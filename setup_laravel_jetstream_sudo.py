@@ -667,7 +667,8 @@ def main():
         'name': project_name,
         'path': project_path,
         'app_name_formatted': app_name_formatted,
-        'db_config': db_config 
+        'db_config': db_config,
+        'db_driver': args.db_driver
     }
 
     print("\n" + "="*60)
